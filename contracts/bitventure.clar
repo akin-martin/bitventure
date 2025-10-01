@@ -207,3 +207,108 @@
 (define-read-only (is-contract-paused)
   (var-get paused)
 )
+
+;; PRIVATE HELPER FUNCTIONS
+
+(define-private (calculate-platform-fee (amount uint))
+  (/ (* amount (var-get platform-fee-percentage)) u10000)
+)
+
+(define-private (calculate-equity-tokens
+    (investment uint)
+    (funding-goal uint)
+  )
+  ;; Proportional equity: (investment / funding-goal) * 10000 base tokens
+  (/ (* investment u10000) funding-goal)
+)
+
+(define-private (is-valid-string-utf8-64 (str (string-utf8 64)))
+  (> (len str) u0)
+)
+
+(define-private (is-valid-string-utf8-256 (str (string-utf8 256)))
+  (> (len str) u0)
+)
+
+;; PUBLIC FUNCTIONS - CAMPAIGN LIFECYCLE
+
+(define-public (create-campaign
+    (title (string-utf8 64))
+    (description (string-utf8 256))
+    (funding-goal uint)
+    (duration uint)
+    (milestone-count uint)
+  )
+  (let ((campaign-id (+ (var-get total-campaigns) u1)))
+    (begin
+      ;; Validation checks
+      (asserts! (not (var-get paused)) err-invalid-parameter)
+      (asserts! (is-valid-string-utf8-64 title) err-invalid-parameter)
+      (asserts! (is-valid-string-utf8-256 description) err-invalid-parameter)
+      (asserts! (> funding-goal u0) err-invalid-parameter)
+      (asserts! (> duration u0) err-invalid-parameter)
+      (asserts! (and (>= milestone-count u1) (<= milestone-count u10))
+        err-invalid-parameter
+      )
+
+      (map-set campaigns campaign-id {
+        founder: tx-sender,
+        title: title,
+        description: description,
+        funding-goal: funding-goal,
+        total-raised: u0,
+        deadline: (+ stacks-block-height duration),
+        active: true,
+        completed: false,
+        milestone-count: milestone-count,
+      })
+
+      (map-set campaign-stats campaign-id {
+        total-investors: u0,
+        average-investment: u0,
+        last-update: stacks-block-height,
+      })
+
+      (var-set total-campaigns campaign-id)
+      (ok campaign-id)
+    )
+  )
+)
+
+(define-public (invest-in-campaign
+    (campaign-id uint)
+    (amount uint)
+  )
+  (let (
+      (campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found))
+      (existing-investment (default-to {
+        amount: u0,
+        timestamp: u0,
+        equity-tokens: u0,
+      }
+        (map-get? campaign-investments {
+          campaign-id: campaign-id,
+          investor: tx-sender,
+        })
+      ))
+      (platform-fee (calculate-platform-fee amount))
+      (investment-amount (- amount platform-fee))
+      (equity-tokens (calculate-equity-tokens investment-amount (get funding-goal campaign)))
+    )
+    (begin
+      ;; Validation checks
+      (asserts! (not (var-get paused)) err-invalid-parameter)
+      (asserts! (get active campaign) err-campaign-ended)
+      (asserts! (<= stacks-block-height (get deadline campaign))
+        err-campaign-ended
+      )
+      (asserts! (> amount u0) err-invalid-parameter)
+      (asserts! (>= (stx-get-balance tx-sender) amount) err-insufficient-funds)
+
+      ;; Process transfers
+      (unwrap! (stx-transfer? investment-amount tx-sender (get founder campaign))
+        err-insufficient-funds
+      )
+      (unwrap! (stx-transfer? platform-fee tx-sender contract-owner)
+        err-insufficient-funds
+      )
