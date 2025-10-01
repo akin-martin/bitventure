@@ -312,3 +312,118 @@
       (unwrap! (stx-transfer? platform-fee tx-sender contract-owner)
         err-insufficient-funds
       )
+
+      ;; Update campaign totals
+      (map-set campaigns campaign-id
+        (merge campaign { total-raised: (+ (get total-raised campaign) investment-amount) })
+      )
+
+      ;; Record investment
+      (map-set campaign-investments {
+        campaign-id: campaign-id,
+        investor: tx-sender,
+      } {
+        amount: (+ (get amount existing-investment) investment-amount),
+        timestamp: stacks-block-height,
+        equity-tokens: (+ (get equity-tokens existing-investment) equity-tokens),
+      })
+
+      ;; Update investor portfolio
+      (let ((portfolio (default-to {
+          total-invested: u0,
+          active-campaigns: u0,
+          total-returns: u0,
+        }
+          (map-get? investor-portfolios tx-sender)
+        )))
+        (map-set investor-portfolios tx-sender
+          (merge portfolio {
+            total-invested: (+ (get total-invested portfolio) investment-amount),
+            active-campaigns: (if (is-eq (get amount existing-investment) u0)
+              (+ (get active-campaigns portfolio) u1)
+              (get active-campaigns portfolio)
+            ),
+          })
+        )
+      )
+
+      ;; Update campaign statistics
+      (let ((current-stats (default-to {
+          total-investors: u0,
+          average-investment: u0,
+          last-update: u0,
+        }
+          (map-get? campaign-stats campaign-id)
+        )))
+        (let ((new-investor-count (if (is-eq (get amount existing-investment) u0)
+            (+ (get total-investors current-stats) u1)
+            (get total-investors current-stats)
+          )))
+          (map-set campaign-stats campaign-id {
+            total-investors: new-investor-count,
+            average-investment: (/ (+ (get total-raised campaign) investment-amount)
+              new-investor-count
+            ),
+            last-update: stacks-block-height,
+          })
+        )
+      )
+
+      ;; Track platform fees
+      (var-set total-platform-fees (+ (var-get total-platform-fees) platform-fee))
+      (ok true)
+    )
+  )
+)
+
+(define-public (close-campaign (campaign-id uint))
+  (let ((campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found)))
+    (begin
+      (asserts! (is-eq tx-sender (get founder campaign)) err-not-authorized)
+      (asserts! (get active campaign) err-campaign-ended)
+      (asserts!
+        (or
+          (> stacks-block-height (get deadline campaign))
+          (>= (get total-raised campaign) (get funding-goal campaign))
+        )
+        err-invalid-parameter
+      )
+
+      (map-set campaigns campaign-id
+        (merge campaign {
+          active: false,
+          completed: true,
+        })
+      )
+      (ok true)
+    )
+  )
+)
+
+;; PUBLIC FUNCTIONS - MILESTONE MANAGEMENT
+
+(define-public (create-milestone
+    (campaign-id uint)
+    (milestone-id uint)
+    (title (string-utf8 64))
+    (description (string-utf8 256))
+    (funding-percentage uint)
+    (voting-duration uint)
+  )
+  (let ((campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found)))
+    (begin
+      ;; Validation checks
+      (asserts! (is-eq tx-sender (get founder campaign)) err-not-authorized)
+      (asserts! (get completed campaign) err-campaign-not-found)
+      (asserts! (<= milestone-id (get milestone-count campaign))
+        err-invalid-parameter
+      )
+      (asserts! (is-valid-string-utf8-64 title) err-invalid-parameter)
+      (asserts! (is-valid-string-utf8-256 description) err-invalid-parameter)
+      (asserts! (and (> funding-percentage u0) (<= funding-percentage u100))
+        err-invalid-parameter
+      )
+      (asserts!
+        (and (>= voting-duration min-voting-duration) (<= voting-duration max-voting-duration))
+        err-invalid-parameter
+      )
