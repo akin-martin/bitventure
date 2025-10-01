@@ -427,3 +427,112 @@
         (and (>= voting-duration min-voting-duration) (<= voting-duration max-voting-duration))
         err-invalid-parameter
       )
+
+      (map-set campaign-milestones {
+        campaign-id: campaign-id,
+        milestone-id: milestone-id,
+      } {
+        title: title,
+        description: description,
+        funding-percentage: funding-percentage,
+        completed: false,
+        votes-for: u0,
+        votes-against: u0,
+        voting-deadline: (+ stacks-block-height voting-duration),
+        funds-released: false,
+      })
+      (ok true)
+    )
+  )
+)
+
+(define-public (vote-on-milestone
+    (campaign-id uint)
+    (milestone-id uint)
+    (approve bool)
+  )
+  (let (
+      (campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found))
+      (milestone (unwrap!
+        (map-get? campaign-milestones {
+          campaign-id: campaign-id,
+          milestone-id: milestone-id,
+        })
+        err-milestone-not-found
+      ))
+      (investment (unwrap!
+        (map-get? campaign-investments {
+          campaign-id: campaign-id,
+          investor: tx-sender,
+        })
+        err-not-authorized
+      ))
+      (existing-vote (map-get? milestone-votes {
+        campaign-id: campaign-id,
+        milestone-id: milestone-id,
+        voter: tx-sender,
+      }))
+      (voting-power (get equity-tokens investment))
+    )
+    (begin
+      ;; Validation checks
+      (asserts! (is-none existing-vote) err-already-voted)
+      (asserts! (<= stacks-block-height (get voting-deadline milestone))
+        err-voting-period-ended
+      )
+      (asserts! (> voting-power u0) err-not-authorized)
+      (asserts! (<= milestone-id (get milestone-count campaign))
+        err-invalid-parameter
+      )
+
+      ;; Record vote
+      (map-set milestone-votes {
+        campaign-id: campaign-id,
+        milestone-id: milestone-id,
+        voter: tx-sender,
+      } {
+        vote: approve,
+        timestamp: stacks-block-height,
+        voting-power: voting-power,
+      })
+
+      ;; Update milestone tallies
+      (map-set campaign-milestones {
+        campaign-id: campaign-id,
+        milestone-id: milestone-id,
+      }
+        (merge milestone {
+          votes-for: (if approve
+            (+ (get votes-for milestone) voting-power)
+            (get votes-for milestone)
+          ),
+          votes-against: (if (not approve)
+            (+ (get votes-against milestone) voting-power)
+            (get votes-against milestone)
+          ),
+        })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (complete-milestone
+    (campaign-id uint)
+    (milestone-id uint)
+  )
+  (let (
+      (campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found))
+      (milestone (unwrap!
+        (map-get? campaign-milestones {
+          campaign-id: campaign-id,
+          milestone-id: milestone-id,
+        })
+        err-milestone-not-found
+      ))
+      (total-votes (+ (get votes-for milestone) (get votes-against milestone)))
+      (approval-rate (if (> total-votes u0)
+        (/ (* (get votes-for milestone) u100) total-votes)
+        u0
+      ))
+    )
