@@ -536,3 +536,103 @@
         u0
       ))
     )
+    (begin
+      ;; Validation checks
+      (asserts! (is-eq tx-sender (get founder campaign)) err-not-authorized)
+      (asserts! (> stacks-block-height (get voting-deadline milestone))
+        err-voting-period-ended
+      )
+      (asserts! (>= approval-rate u51) err-milestone-not-completed)
+      (asserts! (not (get funds-released milestone)) err-invalid-parameter)
+      (asserts! (<= milestone-id (get milestone-count campaign))
+        err-invalid-parameter
+      )
+
+      (map-set campaign-milestones {
+        campaign-id: campaign-id,
+        milestone-id: milestone-id,
+      }
+        (merge milestone {
+          completed: true,
+          funds-released: true,
+        })
+      )
+      (ok true)
+    )
+  )
+)
+
+;; PUBLIC FUNCTIONS - ADMINISTRATIVE
+
+(define-public (set-platform-fee (new-fee uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (<= new-fee u1000) err-invalid-parameter)
+    (var-set platform-fee-percentage new-fee)
+    (ok true)
+  )
+)
+
+(define-public (toggle-pause)
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (var-set paused (not (var-get paused)))
+    (ok true)
+  )
+)
+
+(define-public (withdraw-platform-fees)
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (let ((fees (var-get total-platform-fees)))
+      (var-set total-platform-fees u0)
+      (stx-transfer? fees tx-sender contract-owner)
+    )
+  )
+)
+
+;; PUBLIC FUNCTIONS - EMERGENCY CONTROLS
+
+(define-public (emergency-close-campaign (campaign-id uint))
+  (let ((campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found)))
+    (begin
+      (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+      (asserts! (<= campaign-id (var-get total-campaigns)) err-invalid-parameter)
+      (map-set campaigns campaign-id (merge campaign { active: false }))
+      (ok true)
+    )
+  )
+)
+
+(define-public (force-milestone-completion
+    (campaign-id uint)
+    (milestone-id uint)
+  )
+  (let (
+      (campaign (unwrap! (map-get? campaigns campaign-id) err-campaign-not-found))
+      (milestone (unwrap!
+        (map-get? campaign-milestones {
+          campaign-id: campaign-id,
+          milestone-id: milestone-id,
+        })
+        err-milestone-not-found
+      ))
+    )
+    (begin
+      (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+      (asserts! (<= milestone-id (get milestone-count campaign))
+        err-invalid-parameter
+      )
+      (map-set campaign-milestones {
+        campaign-id: campaign-id,
+        milestone-id: milestone-id,
+      }
+        (merge milestone {
+          completed: true,
+          funds-released: true,
+        })
+      )
+      (ok true)
+    )
+  )
+)
